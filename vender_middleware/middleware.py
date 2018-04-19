@@ -9,8 +9,8 @@ from poim.utils.login import mk_qr_code_cls
 from .types import VendorMeta, VendorRouter
 from .utils import mk_qrcode
 
-from werkzeug.http import http_date
 from werkzeug.wsgi import wrap_file
+from werkzeug.wrappers import Request, Response
 
 
 redis_client = Redis()
@@ -34,42 +34,28 @@ class VendorMiddleware:
             access_token=''
         )
 
-    def callback(self, environ, start_response):
-        if not environ['REQUEST_METHOD'].upper() == 'POST':
-            start_response('405', 'Method not allowed')
-            return
-
-        headers = [
-            ('Date', http_date()),
-        ]
-        body_size = int(environ.get('CONTENT_LENGTH', 0))
-        body = environ['wsgi.input'].read(body_size)
-        data = json.loads(body)
+    @Request.application
+    def callback(self, request):
+        data = json.loads(request.data)
 
         event = make(data, aes_key=self.vendor.aes_key)
-        if not isinstance(event, LoginEvent):
-            return {}
+        assert isinstance(event, LoginEvent)
         code = QRCode.get_unexpired(event.qr_code_id)
-        if code is None:
-            return {}
+        assert code
         code.mark_as_bind()
-        start_response(headers)
-        return
+        return Response('')
 
-    def qr_code(self, environ, start_response):
+    @Request.application
+    def qr_code(self, request):
         qrcode = QRCode.get_or_create(
             poim_client=self.poim_client,
             session_id=session_id,
         )
         qrcode.save()
         fp = mk_qrcode(qrcode.url)
-        headers = [
-            ('Date', http_date()),
-            ('MimeType', 'image/png')
-        ]
-        start_response('200 OK', headers)
-        return wrap_file(environ, fp)
+        return Response(wrap_file(request.environ, fp))
 
+    @Request.application
     def qr_code_status(self, environ, start_response):
         code = QRCode.get_unexpired(session_id)
         if code.is_bind:
@@ -82,11 +68,7 @@ class VendorMiddleware:
                 "session_id": session_id,
                 'status': 'not bind yet',
             }
-        headers = [
-            ('Date', http_date()),
-        ]
-        start_response(headers)
-        return [json.dumps(data)]
+        return Response(json.dumps(data))
 
     def __call__(self, environ, start_response):
         return self.wsgi(environ, start_response).get(

@@ -9,8 +9,8 @@ from poim.utils.login import mk_qr_code_cls
 from .types import VendorMeta, VendorRouter
 from .utils import mk_qrcode
 
-from werkzeug.wsgi import wrap_file
-from werkzeug.wrappers import Request, Response
+from werkzeug.wrappers import Request, Response, ResponseStream
+from werkzeug.routing import Map, Rule
 
 
 redis_client = Redis()
@@ -21,13 +21,14 @@ session_id = "1"
 
 class VendorMiddleware:
     def __init__(self, wsgi, vendor: VendorMeta, router: VendorRouter):
-        self.wsgi = wsgi
+        self.wsgi = Request.application(wsgi)
         self.vendor = vendor
-        self.router = {
-            router.callback: self.callback,
-            router.qr_code: self.qr_code,
-            router.qr_code_status: self.qr_code_status
-        }
+        self.adapter = Map([
+            Rule(router.callback, endpoint='callback', methods=['POST']),
+            Rule(router.qr_code, endpoint='qr_code', methods=['GET']),
+            Rule(router.qr_code_status, endpoint='qr_code_status', methods=['GET'])
+        ])
+        self.router = router
         self.bixin_client = Client(
             vendor_name=vendor.name,
             secret=vendor.secret,
@@ -53,7 +54,7 @@ class VendorMiddleware:
         )
         qrcode.save()
         fp = mk_qrcode(qrcode.url)
-        return Response(wrap_file(request.environ, fp))
+        return ResponseStream(fp)
 
     @Request.application
     def qr_code_status(self, environ, start_response):
@@ -70,6 +71,9 @@ class VendorMiddleware:
             }
         return Response(json.dumps(data))
 
-    def __call__(self, environ, start_response):
-        return self.wsgi(environ, start_response).get(
-            environ['PATH_INFO'], self.wsgi(environ, start_response))
+    @Request.application
+    def __call__(self, request):
+        return self.adapter.dispatch(
+            lambda e, v: self.router.get(e, self.wsgi)(request, v),
+            catch_http_exception=True
+        )

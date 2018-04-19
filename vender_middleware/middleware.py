@@ -21,14 +21,13 @@ session_id = "1"
 
 class VendorMiddleware:
     def __init__(self, wsgi, vendor: VendorMeta, router: VendorRouter):
-        self.wsgi = Request.application(wsgi)
+        self.wsgi = wsgi
         self.vendor = vendor
-        self.adapter = Map([
-            Rule(router.callback, endpoint='callback', methods=['POST']),
-            Rule(router.qr_code, endpoint='qr_code', methods=['GET']),
-            Rule(router.qr_code_status, endpoint='qr_code_status', methods=['GET'])
-        ])
-        self.router = router
+        self.router = Map([
+            Rule(router.callback, endpoint=self.callback, methods=['POST']),
+            Rule(router.qr_code, endpoint=self.qr_code, methods=['GET']),
+            Rule(router.qr_code_status, endpoint=self.qr_code_status, methods=['GET'])
+        ], redirect_defaults=Request.application(wsgi))
         self.bixin_client = Client(
             vendor_name=vendor.name,
             secret=vendor.secret,
@@ -71,9 +70,5 @@ class VendorMiddleware:
             }
         return Response(json.dumps(data))
 
-    @Request.application
-    def __call__(self, request):
-        return self.adapter.dispatch(
-            lambda e, v: self.router.get(e, self.wsgi)(request, v),
-            catch_http_exception=True
-        )
+    def __call__(self, environ, start_response):
+        return self.router.dispatch(lambda view, kwargs: view(**kwargs))
